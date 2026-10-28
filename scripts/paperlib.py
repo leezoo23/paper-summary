@@ -64,7 +64,7 @@ def from_crossref(doi):
     return {
         "title": html.unescape((m.get("title") or [""])[0]),
         "authors": [{"family": a["family"], "given": a.get("given", "")} if a.get("family") else {"literal": a.get("name", "")}
-                    for a in m.get("author", [])],
+                    for a in m.get("author", []) if a.get("family") or a.get("name")],
         "year": date[0] if date else None,
         "venue": html.unescape((m.get("container-title") or [""])[0]),
         "volume": m.get("volume", ""), "issue": m.get("issue", ""), "pages": m.get("page", ""),
@@ -119,7 +119,9 @@ def norm_title(s):
 def same_title(a, b):
     """PDF에서 읽은 제목과 검색 결과 제목이 같은 논문인지 (앞 40자 기준)."""
     a, b = norm_title(a), norm_title(b)
-    return bool(a and b) and (a[:40] in b or b[:40] in a)
+    if min(len(a), len(b)) < 8:  # "10" 같은 장 번호를 제목으로 읽으면 엉뚱한 논문과 맞춰짐
+        return False
+    return a[:40] in b or b[:40] in a
 
 
 def pdf_title(doc):
@@ -129,6 +131,8 @@ def pdf_title(doc):
         return t
     spans = [(s["size"], s["text"]) for b in doc[0].get_text("dict")["blocks"] for l in b.get("lines", []) for s in l["spans"]
              if s["text"].strip()]
+    if not spans:  # 스캔본처럼 1쪽에 글자가 없는 PDF
+        return ""
     big = max(sz for sz, _ in spans)
     return " ".join(tx.strip() for sz, tx in spans if sz >= big - 0.5)
 
@@ -296,7 +300,8 @@ def make_key(meta):
     word = next((key_word(w) for w in meta["title"].split() if key_word(w) and key_word(w).lower() not in STOP), "doc")
     base = f"{who or 'Anon'}{meta.get('year') or 'nd'}{word.lower() if word.isascii() else word}"
     key, n = base, 0
-    while (PAPERS / key).exists() and json.loads((PAPERS / key / "meta.json").read_text(encoding="utf-8")).get("doi") != meta.get("doi"):
+    # DOI가 둘 다 없으면 다른 논문으로 본다 (같은 키로 덮어쓰지 않도록)
+    while (PAPERS / key).exists() and not (meta.get("doi") and json.loads((PAPERS / key / "meta.json").read_text(encoding="utf-8")).get("doi") == meta["doi"]):
         n += 1
         key = base + "abcdefghij"[n - 1]
     return key
@@ -416,7 +421,7 @@ def bib_entry(m):
     k = kind(m)
     entry = {"report": "techreport", "book": "book", "web": "misc"}.get(k) or (
         "misc" if m.get("type") in ("preprint", "posted-content") else "inproceedings" if "proceedings" in m.get("type", "") else "article")
-    au = " and ".join("{" + a["literal"] + "}" if a.get("literal") else f"{a['family']}, {a['given']}".strip(", ")
+    au = " and ".join("{" + a["literal"] + "}" if a.get("literal") else f"{a.get('family', '')}, {a.get('given', '')}".strip(", ")
                       for a in m.get("authors", []))
     f = {"title": "{" + esc(m["title"]) + "}", "author": au, "year": m.get("year") or "",
          ("booktitle" if entry == "inproceedings" else "journal"): m.get("venue", "") if k == "article" else "",
